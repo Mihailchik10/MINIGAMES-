@@ -28,6 +28,32 @@ def input_int(prompt, minv=None, maxv=None):
 
 def press_enter():
     input('\nНажмите Enter, чтобы продолжить...')
+def safe_print(s):
+    """
+    Вывод с небольшой паузой — чтобы текст успевал прочитаться.
+    """
+    print(s)
+    time.sleep(0.6)
+def input_choice(prompt, choices):
+    """
+    Показать варианты choices пользователю и вернуть выбранный элемент (строку).
+    Если ввод пустой — вернуть None.
+    """
+    print(prompt)
+    for i, c in enumerate(choices, 1):
+        print(f'{i}. {c}')
+    sel = input_int('Выберите номер (Enter - пропуск): ', 1, len(choices))
+    if sel is None:
+        return None
+    return choices[sel - 1]
+def names_list(n):
+    """
+    Вернуть список имён игроков длины n, где первый — 'You', остальные P2..Pn.
+    Например: n=4 -> ['You','P2','P3','P4']
+    """
+    if n is None or n < 1:
+        return ['You']
+    return ['You'] + [f'P{i}' for i in range(2, n+1)]
 def choose_option(prompt, options):
     """
     Показать список options пользователю, запросить номер и вернуть индекс (0-based).
@@ -3680,6 +3706,1143 @@ def quiz_very_hard():
 def quiz_vs_players():
     n = input_int('Сколько игроков (включая вас) (по умолчанию 4): ', 2) or 4
     quiz_basic(rounds=6, hard=False, timed=False, vs_players=n)
+# -----------------------
+# Multiplayer helper simulator
+# NPCs act with simple probabilistic logic to emulate other players.
+# -----------------------
+def simulate_npc_choice(npc_name, choices, bias=None):
+    # bias: optional dict mapping choice->weight increase
+    weights = []
+    for c in choices:
+        w = 1.0
+        if bias and c in bias:
+            w += bias[c]
+        # small variability based on npc "personality"
+        w *= random.uniform(0.7, 1.3)
+        weights.append(w)
+    total = sum(weights)
+    pick = random.random() * total
+    acc = 0
+    for c, w in zip(choices, weights):
+        acc += w
+        if pick <= acc:
+            return c
+    return random.choice(choices)
+
+# -----------------------
+# 1) Сапёр с другими игроками (multiplayer Minesweeper race)
+# Each player in turn reveals a cell on shared board; the one who hits mine is out.
+# Last remaining wins.
+# -----------------------
+def minesweeper_vs_players():
+    clear()
+    print('=== Сапёр с другими игроками ===')
+    n = input_int('Игроков (включая вас) (по умолчанию 4): ', 2) or 4
+    rows = input_int('Строки (по умолчанию 6): ', 3) or 6
+    cols = input_int('Столбцы (по умолчанию 8): ', 3) or 8
+    mines_count = input_int('Число мин (по умолчанию 8): ', 1, rows*cols-1) or 8
+    names = names_list(n)
+    board = [[0]*cols for _ in range(rows)]
+    mined = set()
+    # place mines
+    while len(mined) < mines_count:
+        r = random.randrange(rows); c = random.randrange(cols)
+        mined.add((r,c))
+    # compute numbers
+    for r in range(rows):
+        for c in range(cols):
+            if (r,c) in mined:
+                board[r][c] = -1
+            else:
+                cnt = 0
+                for dr in (-1,0,1):
+                    for dc in (-1,0,1):
+                        if dr==0 and dc==0: continue
+                        nr, nc = r+dr, c+dc
+                        if 0<=nr<rows and 0<=nc<cols and (nr,nc) in mined:
+                            cnt += 1
+                board[r][c] = cnt
+    revealed = [[False]*cols for _ in range(rows)]
+    alive = names[:]
+    turn = 0
+    while len(alive) > 1:
+        current = alive[turn % len(alive)]
+        clear()
+        print('Текущие игроки:', ', '.join(alive))
+        # display small part of board as indices
+        print('Карта (x,y): нераскрытые показаны индексом, раскрытые - число или M')
+        for r in range(rows):
+            line = ''
+            for c in range(cols):
+                if revealed[r][c]:
+                    line += f'{("M" if board[r][c]==-1 else board[r][c])} '
+                else:
+                    line += f'[{r},{c}] '
+            print(line)
+        print('Ход:', current)
+        if current == 'You':
+            sel_r = input_int('Выберите строку: ', 0, rows-1)
+            sel_c = input_int('Выберите столбец: ', 0, cols-1)
+            if sel_r is None or sel_c is None:
+                print('Пропуск хода.')
+                sel = None
+            else:
+                sel = (sel_r, sel_c)
+        else:
+            # NPC picks random unrevealed
+            choices = [(r,c) for r in range(rows) for c in range(cols) if not revealed[r][c]]
+            sel = random.choice(choices) if choices else None
+            print(f'{current} выбирает {sel}')
+            time.sleep(0.6)
+        if sel is None:
+            turn += 1
+            continue
+        r,c = sel
+        if revealed[r][c]:
+            print('Уже открыто — теряется ход.')
+            turn += 1
+            time.sleep(0.6)
+            continue
+        revealed[r][c] = True
+        if board[r][c] == -1:
+            print(f'Бах! {current} подорвался на мине и выбывает.')
+            alive.remove(current)
+            time.sleep(1.0)
+            # after mine explosion, continue with same next index (no increment)
+            # if current removed, turn remains same index
+            continue
+        else:
+            print(f'Открыто число: {board[r][c]}')
+        turn += 1
+        time.sleep(0.7)
+    clear()
+    if alive:
+        print('Победитель:', alive[0])
+    else:
+        print('Никто не остался жив.')
+    press_enter()
+
+# -----------------------
+# 2) Догонялки с другими игроками (multiplayer chase)
+# Players move on a linear track; chaser is random player or can be You.
+# -----------------------
+def chase_vs_players():
+    clear()
+    print('=== Догонялки с другими игроками ===')
+    n = input_int('Игроков (включая вас) (по умолчанию 5): ', 2) or 5
+    length = input_int('Длина трека (по умолчанию 30): ', 10) or 30
+    names = names_list(n)
+    # choose chaser randomly
+    chaser = random.choice(names)
+    positions = {p: 0 for p in names}
+    finished = set()
+    print('Chaser:', chaser)
+    press_enter()
+    while True:
+        for p in names:
+            if p in finished:
+                continue
+            if p == 'You':
+                # move choice: run or sneak
+                move = input('Ваш ход: run/sneak (r/s): ').strip().lower()
+                if move == 'r':
+                    positions[p] += random.randint(2,4)
+                else:
+                    positions[p] += random.randint(0,2)
+            else:
+                # NPC logic: if chaser close, run faster
+                dist = positions[chaser] - positions[p]
+                if dist >= -3:
+                    positions[p] += random.randint(1,3)
+                else:
+                    positions[p] += random.randint(0,2)
+            # chaser moves (if not current)
+            if p == chaser:
+                # chaser moves towards nearest target
+                targets = [q for q in names if q!=chaser and q not in finished]
+                if targets:
+                    nearest = min(targets, key=lambda t: positions[chaser]-positions[t])
+                    # move forward
+                    positions[chaser] += random.randint(2,4)
+            # check catches
+            for q in names:
+                if q != chaser and positions[chaser] >= positions[q] and q not in finished:
+                    print(f'{chaser} поймал {q}!')
+                    finished.add(q)
+            # check finishers
+            for q in names:
+                if positions[q] >= length:
+                    finished.add(q)
+            # small display
+        # show status
+        clear()
+        for p in names:
+            print(p, positions[p], '(caught)' if p in finished else '')
+        time.sleep(0.6)
+        # end condition: only chaser or one remains not caught
+        alive = [p for p in names if p not in finished]
+        if len(alive) <= 1:
+            print('Игра окончена. Выжившие:', alive)
+            press_enter()
+            return
+
+# -----------------------
+# 3) Догонялки с мячом с другими игроками
+# Similar to chase_vs_players but ball possession modeled; winner is who reaches goal with ball.
+# -----------------------
+def chase_ball_vs_players():
+    clear()
+    print('=== Догонялки с мячом с другими игроками ===')
+    n = input_int('Игроков (включая вас) (по умолчанию 5): ', 2) or 5
+    length = input_int('Длина трека (по умолчанию 28): ', 10) or 28
+    names = names_list(n)
+    ball_holder = random.choice(names)
+    positions = {p: 0 for p in names}
+    print('Начинающий с мячом:', ball_holder)
+    press_enter()
+    while True:
+        for p in names:
+            if positions[p] >= length:
+                continue
+            if p == 'You':
+                action = input('Ваш ход: run/sneak/throw (r/s/t): ').strip().lower()
+                if action == 'r':
+                    positions[p] += random.randint(2,4)
+                elif action == 't' and ball_holder == 'You':
+                    # attempt to throw to someone ahead
+                    targets = [q for q in names if q != 'You']
+                    receiver = input('Кому бросаете? (имя) или Enter случайно: ').strip()
+                    if receiver not in names:
+                        receiver = random.choice(targets)
+                    if random.random() < 0.6:
+                        ball_holder = receiver
+                        print('Передача успешна — мяч у', receiver)
+                else:
+                    positions[p] += random.randint(0,2)
+            else:
+                # NPC behavior
+                if ball_holder == p:
+                    positions[p] += random.randint(1,3)
+                    # chance to pass to a player ahead for strategy
+                    if random.random() < 0.2:
+                        candidates = [q for q in names if positions[q] > positions[p]]
+                        if candidates:
+                            ball_holder = random.choice(candidates)
+                else:
+                    positions[p] += random.randint(0,2)
+        # check someone reached finish with ball
+        for p in names:
+            if positions[p] >= length and ball_holder == p:
+                print('Игрок', p, 'добрался до финиша с мячом — победа!')
+                press_enter()
+                return
+        # status
+        clear()
+        for p in names:
+            print(p, positions[p], '(ball)' if p==ball_holder else '')
+        time.sleep(0.6)
+
+# -----------------------
+# 4) Кликер с другими игроками (simulated idle multiplayer)
+# Each player has click rate; run for time and see totals.
+# -----------------------
+def clicker_vs_players():
+    clear()
+    print('=== Кликер с другими игроками ===')
+    n = input_int('Игроков (включая вас) (по умолчанию 4): ', 2) or 4
+    duration = input_int('Время в секундах (по умолчанию 10): ', 3) or 10
+    names = names_list(n)
+    scores = {p:0 for p in names}
+    start = time.time()
+    print('Нажимайте Enter как можно быстрее. ИГРА старт!')
+    # NPC click rates:
+    rates = {p: random.uniform(0.8, 2.5) for p in names if p != 'You'}
+    try:
+        while time.time() - start < duration:
+            # NPC accumulate
+            for p, r in rates.items():
+                scores[p] += int(r * 0.2)  # tick
+            input_timeout = duration - (time.time() - start)
+            # let user press Enter once per loop to add clicks
+            # we can't do non-blocking easily here without extra modules, so count Enter presses manually
+            input()  # counts as one click
+            scores['You'] += 1
+    except KeyboardInterrupt:
+        pass
+    clear()
+    print('Результаты кликера:')
+    for p in names:
+        print(p, scores[p])
+    press_enter()
+
+# -----------------------
+# 5) Memory с другими игроками (pairs game with simulated opponents)
+# Players take turns revealing two cards; NPCs have memory strength.
+# -----------------------
+def memory_vs_players():
+    clear()
+    print('=== Memory с другими игроками ===')
+    n_players = input_int('Игроков (включая вас) (по умолчанию 4): ', 2) or 4
+    pairs = input_int('Пар карт (по умолчанию 8): ', 2) or 8
+    names = names_list(n_players)
+    cards = list(range(pairs)) * 2
+    random.shuffle(cards)
+    revealed = [False] * (pairs*2)
+    scores = {p:0 for p in names}
+    # NPC memory: how many known card positions they remember
+    memory = {p: {} for p in names}
+    turn = 0
+    while not all(revealed):
+        current = names[turn % len(names)]
+        clear()
+        print('Текущий игрок:', current)
+        # show board indices
+        for i, val in enumerate(cards):
+            if revealed[i]:
+                print(f'[{val}]', end=' ')
+            else:
+                print(f'[{i}]', end=' ')
+        print()
+        if current == 'You':
+            a = input_int('Выберите карту A индекс: ', 0, len(cards)-1)
+            b = input_int('Выберите карту B индекс: ', 0, len(cards)-1)
+        else:
+            # NPC tries to use memory to find pair
+            # memory[current] maps value->index known
+            known_pairs = [(v, idx) for v, idx in memory[current].items() if idx is not None and not revealed[idx]]
+            if known_pairs:
+                # try to select known pair if two indices known for same value across memory?
+                # simplified: pick random unrevealed indices
+                choices = [i for i in range(len(cards)) if not revealed[i]]
+                a = random.choice(choices)
+                b = random.choice([i for i in choices if i != a])
+            else:
+                choices = [i for i in range(len(cards)) if not revealed[i]]
+                a = random.choice(choices)
+                b = random.choice([i for i in choices if i != a])
+            print(f'{current} выбирает {a} и {b}')
+            time.sleep(0.6)
+        if a is None or b is None or a==b:
+            print('Неправильный выбор — ход пропущен.')
+            turn += 1
+            time.sleep(0.6)
+            continue
+        # reveal
+        val_a, val_b = cards[a], cards[b]
+        revealed[a] = revealed[a]
+        revealed[b] = revealed[b]
+        print('Открыто:', val_a, val_b)
+        # NPCs update memory
+        for p in names:
+            if p != current:
+                if not revealed[a]:
+                    memory[p][val_a] = a
+                if not revealed[b]:
+                    memory[p][val_b] = b
+        # check match
+        if val_a == val_b:
+            print(current, 'нашёл пару!')
+            scores[current] += 1
+            revealed[a] = revealed[b] = True
+            # current gets another turn (do not increment)
+        else:
+            # no match, but update current's memory
+            memory[current][val_a] = a
+            memory[current][val_b] = b
+            turn += 1
+        time.sleep(0.8)
+    clear()
+    print('Итоги Memory:')
+    for p in names:
+        print(p, scores[p])
+    press_enter()
+
+# -----------------------
+# 6) Pizza Memory с другими игроками
+# Sequence memory where multiple players attempt to reproduce sequence; best accuracy wins.
+# -----------------------
+def pizza_memory_vs_players():
+    clear()
+    print('=== Pizza Memory с другими игроками ===')
+    n = input_int('Игроков (включая вас) (по умолчанию 4): ', 2) or 4
+    levels = input_int('Уровней (по умолчанию 5): ', 1) or 5
+    names = names_list(n)
+    toppings = ['cheese','tomato','mushroom','pepperoni','olive','onion','basil']
+    seq = []
+    scores = {p:0 for p in names}
+    for lv in range(1, levels+1):
+        seq.append(random.choice(toppings))
+        clear()
+        print('Последовательность:')
+        print(' '.join(seq))
+        time.sleep(1.5)
+        clear()
+        # each player attempts
+        for p in names:
+            if p == 'You':
+                ans = input('Введите последовательность через пробел: ').strip().lower().split()
+                correct = ans == seq
+            else:
+                # NPC reproduces with some error probability decreasing with level
+                accuracy = max(0.2, 1.0 - lv*0.12 + random.uniform(-0.1, 0.1))
+                if random.random() < accuracy:
+                    correct = True
+                else:
+                    correct = False
+                print(p, 'ответил', 'верно' if correct else 'неверно')
+            if correct:
+                scores[p] += 1
+        time.sleep(0.7)
+    clear()
+    print('Итоги Pizza Memory:')
+    for p in names:
+        print(p, scores[p])
+    press_enter()
+
+# -----------------------
+# 7) Food Memory с другими игроками
+# Same as Pizza Memory with food items.
+# -----------------------
+def food_memory_vs_players():
+    clear()
+    print('=== Food Memory с другими игроками ===')
+    n = input_int('Игроков (включая вас) (по умолчанию 4): ', 2) or 4
+    rounds = input_int('Раундов (по умолчанию 6): ', 1) or 6
+    names = names_list(n)
+    foods = ['apple','banana','bread','cheese','cake','egg','fish','tomato']
+    seq = []
+    scores = {p:0 for p in names}
+    for r in range(rounds):
+        seq.append(random.choice(foods))
+        clear()
+        print('Запомните:')
+        print(' '.join(seq))
+        time.sleep(1.2)
+        clear()
+        for p in names:
+            if p == 'You':
+                ans = input('Введите через пробел: ').strip().lower().split()
+                correct = ans == seq
+            else:
+                accuracy = max(0.3, 1 - r*0.13 + random.uniform(-0.1,0.1))
+                correct = random.random() < accuracy
+                print(p, '->', 'верно' if correct else 'неверно')
+            if correct:
+                scores[p] += 1
+        time.sleep(0.6)
+    clear()
+    print('Итоги Food Memory:')
+    for p in names:
+        print(p, scores[p])
+    press_enter()
+
+# -----------------------
+# 8) Sound Memory с другими игроками
+# -----------------------
+def sound_memory_vs_players():
+    clear()
+    print('=== Sound Memory с другими игроками ===')
+    n = input_int('Игроков (включая вас) (по умолчанию 4): ', 2) or 4
+    rounds = input_int('Раундов (по умолчанию 5): ', 1) or 5
+    names = names_list(n)
+    sounds = ['beep','boop','ding','buzz','click','tock']
+    seq = []
+    scores = {p:0 for p in names}
+    for r in range(rounds):
+        seq.append(random.choice(sounds))
+        clear()
+        for s in seq:
+            print(s.upper())
+            time.sleep(0.5)
+            clear()
+        for p in names:
+            if p == 'You':
+                ans = input('Введите последовательность через пробел: ').strip().lower().split()
+                correct = ans == seq
+            else:
+                accuracy = max(0.2, 1 - r*0.15 + random.uniform(-0.1,0.1))
+                correct = random.random() < accuracy
+                print(p, '->', 'верно' if correct else 'неверно')
+            if correct:
+                scores[p] += 1
+        time.sleep(0.5)
+    clear()
+    print('Итоги Sound Memory:')
+    for p in names:
+        print(p, scores[p])
+    press_enter()
+
+# -----------------------
+# 9) Симулятор стройки с другими игроками
+# Team-building construction simulator where players contribute.
+# -----------------------
+def construction_vs_players():
+    clear()
+    print('=== Симулятор стройки с другими игроками ===')
+    n = input_int('Игроков (включая вас) (по умолчанию 4): ', 1) or 4
+    days = input_int('Дней (по умолчанию 10): ', 1) or 10
+    names = names_list(n)
+    progresses = {p:0 for p in names}
+    budget = 200
+    for d in range(1, days+1):
+        clear()
+        print(f'День {d}/{days}. Бюджет: {budget}')
+        for p in names:
+            if p == 'You':
+                action = input('Вкладываться или отдыхать? invest/rest (i/r): ').strip().lower()
+                if action == 'i' and budget > 0:
+                    invest = min(20, budget)
+                    progress = invest // 2 + random.randint(0,5)
+                    progresses[p] += progress
+                    budget -= invest
+                    print('Вы вложили', invest, 'прогресс', progress)
+                else:
+                    print('Вы отдыхали.')
+            else:
+                # NPC contribution depends on random willingness
+                if random.random() < 0.6:
+                    invest = random.randint(5,20)
+                    progress = invest // 2 + random.randint(0,4)
+                    progresses[p] += progress
+                    budget -= invest
+                    print(p, 'вложил', invest)
+        # show totals
+        total_progress = sum(progresses.values())
+        print('Общий прогресс:', total_progress)
+        if total_progress >= 100:
+            print('Стройка завершена!')
+            press_enter()
+            return
+        time.sleep(0.6)
+    print('Время закончилось. Общий прогресс:', sum(progresses.values()))
+    press_enter()
+
+# -----------------------
+# 10) Комнаты с другими игроками
+# Multiplayer hide-and-seek in rooms; monsters appear and players hide/seek.
+# -----------------------
+def rooms_vs_players():
+    clear()
+    print('=== Комнаты с другими игроками ===')
+    n = input_int('Игроков (включая вас) (по умолчанию 5): ', 2) or 5
+    rooms_count = input_int('Сколько комнат (по умолчанию 8): ', 3) or 8
+    names = names_list(n)
+    player_rooms = {p: random.randrange(rooms_count) for p in names}
+    hidden = {p: False for p in names}
+    alive = set(names)
+    rounds = input_int('Раундов (по умолчанию 10): ', 1) or 10
+    for r in range(1, rounds+1):
+        clear()
+        print(f'Раунд {r}/{rounds}. Игроки живы: {len(alive)}')
+        # for each player decide action
+        for p in list(alive):
+            if p == 'You':
+                cmd = input('Ваше действие: move L/R / hide / search (m/h/s) (Enter skip): ').strip().lower()
+                if cmd.startswith('m'):
+                    dirc = input('L или R: ').strip().lower()
+                    nr = player_rooms[p] - 1 if dirc == 'l' else player_rooms[p] + 1
+                    if 0 <= nr < rooms_count:
+                        player_rooms[p] = nr
+                        hidden[p] = False
+                        print('Вы вошли в комнату', nr)
+                elif cmd == 'h':
+                    hidden[p] = True
+                    print('Вы спрятались.')
+                elif cmd == 's':
+                    print('Вы обыскали комнату.')
+            else:
+                # NPC move/hide/search probabilistically
+                act = random.random()
+                if act < 0.4:
+                    # move
+                    dirc = random.choice([-1,1])
+                    nr = player_rooms[p] + dirc
+                    if 0 <= nr < rooms_count:
+                        player_rooms[p] = nr
+                        hidden[p] = False
+                elif act < 0.7:
+                    hidden[p] = True
+                else:
+                    pass  # search
+        # monsters appear randomly in rooms and eat unhidden players
+        monster_room = random.randrange(rooms_count) if random.random() < 0.35 else None
+        if monster_room is not None:
+            victims = [p for p in alive if player_rooms[p] == monster_room and not hidden[p]]
+            for v in victims:
+                print('Монстр съел', v)
+                alive.remove(v)
+        time.sleep(0.8)
+        if len(alive) <= 1:
+            break
+    clear()
+    print('Игра окончена. Выжившие:', ', '.join(sorted(alive)))
+    press_enter()
+
+# -----------------------
+# 11) Проклятие с другими игроками
+# House roaming where each round an effect appears; players experience it; last alive wins.
+# -----------------------
+def curse_vs_players():
+    clear()
+    print('=== Проклятие с другими игроками ===')
+    n = input_int('Игроков (включая вас) (по умолчанию 5): ', 2) or 5
+    rooms_count = input_int('Комнат в доме (по умолчанию 6): ', 2) or 6
+    names = names_list(n)
+    healths = {p: 10 for p in names}
+    positions = {p: random.randrange(rooms_count) for p in names}
+    rounds = input_int('Раундов (по умолчанию 12): ', 1) or 12
+    effects = [
+        ('shadow','-2'), ('blessing','+2'), ('freeze','-1'),
+        ('feast','+1'), ('curse_sleep','-1'), ('mana','+1')
+    ]
+    for r in range(1, rounds+1):
+        clear()
+        print(f'Раунд {r}/{rounds}')
+        print('Позиции игроков:', positions)
+        # each player chooses move or stay
+        for p in names:
+            if p == 'You':
+                cmd = input('move L/R or stay (m/s) (Enter stay): ').strip().lower()
+                if cmd.startswith('m'):
+                    dirc = input('L или R: ').strip().lower()
+                    nr = positions[p] - 1 if dirc == 'l' else positions[p] + 1
+                    if 0 <= nr < rooms_count:
+                        positions[p] = nr
+            else:
+                if random.random() < 0.6:
+                    positions[p] = max(0, min(rooms_count-1, positions[p] + random.choice([-1,0,1])))
+        # effect appears in random room
+        effect = random.choice(effects)
+        room = random.randrange(rooms_count)
+        print(f'В комнате {room} проявилось: {effect[0]} ({effect[1]})')
+        # apply effect to players in that room
+        for p in names:
+            if positions[p] == room:
+                if effect[1].startswith('-'):
+                    delta = int(effect[1])
+                    healths[p] += delta
+                else:
+                    delta = int(effect[1].replace('+',''))
+                    healths[p] += delta
+                print(p, '-> здоровье', healths[p])
+        # remove dead
+        for p in list(names):
+            if healths[p] <= 0:
+                print(p, 'умер от эффекта.')
+                names.remove(p)
+        time.sleep(0.8)
+        if len(names) <= 1:
+            break
+    clear()
+    print('Итог здоровья игроков:')
+    for p, h in healths.items():
+        print(p, h)
+    press_enter()
+
+# -----------------------
+# 12) Живой автомобиль с глазами и ртом с другими игроками
+# Cute multiplayer pet car interactions: players can feed, polish, drive; car responds.
+# -----------------------
+def living_car_vs_players():
+    clear()
+    print('=== Живой автомобиль с глазами и ртом с другими игроками ===')
+    n = input_int('Игроков (включая вас) (по умолчанию 4): ', 1) or 4
+    names = names_list(n)
+    car = {'mood':5, 'fuel':5, 'dirt':3}
+    rounds = input_int('Раундов взаимодействия (по умолчанию 8): ', 1) or 8
+    for r in range(1, rounds+1):
+        clear()
+        print(f'Раунд {r}/{rounds}. Машина — настроение {car["mood"]}, топливо {car["fuel"]}, грязь {car["dirt"]}')
+        for p in names:
+            if p == 'You':
+                action = choose_option('Действие для машины:', ['feed (заправить)','clean (почистить)','talk','drive','skip'])
+                if action is None:
+                    print('Пропуск.')
+                elif action == 0:
+                    car['fuel'] = min(10, car['fuel'] + 3); car['mood'] = min(10, car['mood']+1)
+                    print('Вы заправили машину.')
+                elif action == 1:
+                    car['dirt'] = max(0, car['dirt'] - 2); car['mood'] = min(10, car['mood']+1)
+                    print('Вы почистили машину.')
+                elif action == 2:
+                    car['mood'] = min(10, car['mood']+1); print('Вы поговорили с машиной.')
+                elif action == 3:
+                    if car['fuel'] > 0:
+                        car['fuel'] -= 1; car['mood'] = min(10, car['mood']+1)
+                        print('Вы покатались — машина довольна.')
+                    else:
+                        print('Нет топлива.')
+            else:
+                # NPC action probabilistic
+                act = random.random()
+                if act < 0.25:
+                    car['fuel'] = min(10, car['fuel'] + 2); car['mood'] += 1
+                elif act < 0.5:
+                    car['dirt'] = max(0, car['dirt'] - 1); car['mood'] += 1
+                elif act < 0.8:
+                    if car['fuel'] > 0:
+                        car['fuel'] -= 1; car['mood'] += 1
+                # else skip
+        # small decay
+        car['mood'] = max(0, car['mood'] - 1)
+        car['dirt'] = min(10, car['dirt'] + 1)
+        time.sleep(0.6)
+    clear()
+    print('Финальное состояние машины:', car)
+    press_enter()
+# -----------------------
+# Singleplayer games
+# -----------------------
+
+def revenge_game():
+    clear()
+    print('=== Месть ===')
+    story = ['You were betrayed','You lost something','You were humiliated']
+    reason = random.choice(story)
+    print('Сюжет:', reason)
+    choice = input_choice('Как мстить?', ['Confront','Sabotage','Forgive'])
+    if choice == 'Forgive':
+        print('Месть отменена. Вы чувствуете облегчение.')
+    else:
+        outcome = random.choice(['Success','Backfire','Unclear'])
+        print('Исход:', outcome)
+    press_enter()
+
+def happy_car():
+    clear()
+    print('=== Довольная машина ===')
+    mood = 5
+    fuel = 3
+    for i in range(5):
+        clear()
+        print(f'Настроение: {mood}, Топливо: {fuel}')
+        action = choose_option('Действие:', ['Почистить','Заменить масло','Покататься','Покормить топливом','Поговорить'])
+        if action == 0:
+            mood = min(10, mood+1)
+            safe_print('Машина сияет и улыбается.')
+        elif action == 1:
+            mood = min(10, mood+2); fuel = max(0, fuel-1)
+            safe_print('Машина мурлычет.')
+        elif action == 2:
+            if fuel > 0:
+                fuel -= 1; mood = min(10, mood+2)
+                safe_print('Весёлая поездка!')
+            else:
+                safe_print('Нет топлива.')
+        elif action == 3:
+            fuel += 2
+            safe_print('Топливо добавлено.')
+        elif action == 4:
+            mood = min(10, mood+1)
+            safe_print('Машина отвечает "Бип-бип!"')
+        else:
+            safe_print('Вы ничего не сделали.')
+    print('Итог — машина довольна на', mood)
+    press_enter()
+
+def the_path():
+    clear()
+    print('=== Путь ===')
+    steps = input_int('Сколько шагов пройти (по умолчанию 12): ', 1) or 12
+    encounters = ['старый мост','дерево с запиской','пустая колодец','сторожевой камень','мираж']
+    mood = 0
+    for s in range(steps):
+        item = random.choice(encounters)
+        print(f'Шаг {s+1}: вы встретили {item}')
+        cmd = input('Взаимодействовать? (y/n): ').strip().lower()
+        if cmd == 'y':
+            outcome = random.choice(['+','-','neutral'])
+            if outcome == '+':
+                mood += 1; print('Это принесло утешение.')
+            elif outcome == '-':
+                mood -= 1; print('Это было опасно.')
+            else:
+                print('Ничего не произошло.')
+        time.sleep(0.4)
+    print('Итоговое состояние:', mood)
+    press_enter()
+
+def lights_out():
+    clear()
+    print('=== Свет выключен ===')
+    print('Вы в доме, свет гаснет. Нужно добраться до двери на ощупь.')
+    pos = 0
+    target = 6
+    while pos < target:
+        step = input_choice('Куда двигаться?', ['Left','Right','Forward','Listen'])
+        if step == 'Forward':
+            pos += 1
+            print('Вы продвинулись вперёд.')
+        elif step == 'Listen':
+            hint = random.choice(['шаги справа','вода слева','тишина'])
+            print('Вы слышите:', hint)
+        else:
+            print('Вы двинулись в сторону и потеряли время.')
+            pos += 0
+        if random.random() < 0.12:
+            print('Что-то зашевелилось в темноте...')
+        time.sleep(0.5)
+    print('Вы нашли дверь и вышли на свет.')
+    press_enter()
+
+def scareman():
+    clear()
+    print('=== Страхолюдина ===')
+    fear = 0
+    for i in range(5):
+        event = random.choice(['шепот','тень','вопль','шелест'])
+        print('Событие:', event)
+        resp = input('Спрятаться или бежать? (h/run): ').strip().lower()
+        if resp == 'h':
+            fear += random.randint(0,1)
+            safe_print('Вы затаились...')
+        else:
+            fear += random.randint(1,3)
+            safe_print('Вы бежите — сердце колотится!')
+    print('Уровень страха:', fear)
+    press_enter()
+
+def clown_game():
+    clear()
+    print('=== Клоун ===')
+    mood = 0
+    for i in range(4):
+        action = choose_option('Что делать?', ['Смеяться','Подходить ближе','Убежать','Остаться'])
+        if action == 0:
+            mood += 1; safe_print('Клоун улыбается. Вы чувствуете лёгкое облегчение.')
+        elif action == 1:
+            mood += random.choice([-2,2]); safe_print('Клоун реагирует непредсказуемо.')
+        elif action == 2:
+            mood += -1; safe_print('Вы убежали — но клоун догнал вас в кошмаре.')
+        else:
+            safe_print('Ничего не происходит.')
+    print('Итог:', mood)
+    press_enter()
+
+def spirits_months():
+    clear()
+    print('=== Духи месяцев года ===')
+    months = ['январь','февраль','март','апрель','май','июнь','июль','август','сентябрь','октябрь','ноябрь','декабрь']
+    print('Вы вызываете духа месяца...')
+    chosen = random.choice(months)
+    print('Дух', chosen, 'рассказывает пророчество:', random.choice(['жаркое лето','холодная зима','урожай','буря']))
+    press_enter()
+
+def spirits_seasons():
+    clear()
+    print('=== Духи времён года ===')
+    seasons = ['весна','лето','осень','зима']
+    for s in seasons:
+        print(s, '->', random.choice(['торжествует','спит','плачет','поёт']))
+    press_enter()
+
+def spirits_weekdays():
+    clear()
+    print('=== Духи дней недели ===')
+    days = ['Понедельник','Вторник','Среда','Четверг','Пятница','Суббота','Воскресенье']
+    for d in days:
+        print(d, '-', random.choice(['энергия','покой','тоска','веселье','хандра','радость','сонливость']))
+    press_enter()
+
+def abandoned_place():
+    clear()
+    print('=== Заброшка ===')
+    rooms = ['кухня','подвал','чердак','зал','веранда']
+    pos = random.choice(rooms)
+    print('Вы в', pos)
+    for i in range(5):
+        obj = random.choice(['старый диван','разбитое окно','письмо','кровавая метка','детская игрушка'])
+        print('Найдено:', obj)
+        ans = input('Забрать / Уйти? (take/leave): ').strip().lower()
+        if ans == 'take' and random.random() < 0.2:
+            print('Вы получили таинственный предмет...')
+        time.sleep(0.6)
+    press_enter()
+
+def zombie_apocalypse():
+    clear()
+    print('=== Зомби апокалипсис ===')
+    survivors = 3
+    supplies = 5
+    days = input_int('Сколько дней вы хотите выживать? (по умолчанию 5): ', 1) or 5
+    for d in range(days):
+        print(f'День {d+1}: supplies {supplies}, survivors {survivors}')
+        event = random.choice(['raid','quiet','zombie_horde'])
+        if event == 'raid':
+            lost = random.randint(0,1)
+            survivors -= lost
+            supplies -= random.randint(0,2)
+            print('Налёт мародёров!')
+        elif event == 'zombie_horde':
+            lost = random.randint(0,2)
+            survivors -= lost
+            print('Наши потеряли', lost)
+        else:
+            supplies += random.randint(0,2)
+            print('Тихий день — пополнили запасы.')
+        if survivors <= 0 or supplies < 0:
+            print('Все пали.')
+            press_enter()
+            return
+        time.sleep(0.6)
+    print('Вы выжили! Осталось людей:', survivors)
+    press_enter()
+
+def dont_eat_cake():
+    clear()
+    print('=== Не ешь кекс ===')
+    print('Перед вами кекс. Не ешьте его.')
+    for i in range(3):
+        ans = input('Сдержитесь? (y/n): ').strip().lower()
+        if ans == 'y':
+            print('Вы сильны!')
+        else:
+            print('Вы съели кекс и случилось странное...')
+            break
+        time.sleep(0.5)
+    press_enter()
+
+def five_nights_freddy():
+    clear()
+    print('=== 5 ночей с Freddy (упрощено) ===')
+    nights = input_int('Ночей (по умолчанию 3): ', 1) or 3
+    sanity = 10
+    for n in range(nights):
+        print('Ночь', n+1)
+        checks = random.randint(1,3)
+        for c in range(checks):
+            if random.random() < 0.25:
+                sanity -= random.randint(1,3)
+                print('Аниматроник рядом! Потеря рассудка.')
+            else:
+                print('Тишина...')
+            time.sleep(0.6)
+        if sanity <= 0:
+            print('Вы потеряли рассудок.')
+            press_enter()
+            return
+    print('Вы пережили ночи! Рассудок:', sanity)
+    press_enter()
+
+def run_run_run():
+    clear()
+    print('=== БЕГИ ===')
+    distance = 0
+    while distance < 20:
+        cmd = input('Бежать быстро или медленно? (fast/slow): ').strip().lower()
+        if cmd == 'fast':
+            distance += random.randint(2,5)
+            print('Вы ускорились.')
+        else:
+            distance += random.randint(0,2)
+            print('Вы медленно бежите.')
+        if random.random() < 0.1:
+            print('Что-то догоняет вас!')
+        time.sleep(0.4)
+    print('Вы убежали на безопасное расстояние.')
+    press_enter()
+
+def be_quieter():
+    clear()
+    print('=== Будь тише! ===')
+    noise = 0
+    for i in range(6):
+        action = input('Сделать тихо или шумно? (quiet/noisy): ').strip().lower()
+        if action == 'quiet':
+            noise += 0
+            print('Тихо...')
+        else:
+            noise += random.randint(1,3)
+            print('Шум!')
+        if noise >= 6 and random.random() < 0.5:
+            print('Вы привлекли внимание.')
+            press_enter()
+            return
+        time.sleep(0.4)
+    print('Вы прошли незамеченным.')
+    press_enter()
+
+def oddities():
+    clear()
+    print('=== Странности ===')
+    for i in range(5):
+        event = random.choice(['зеркало показывает не тебя','часы идут назад','дерево шепчет','тень улыбается'])
+        print('Странность:', event)
+        input('Нажмите Enter, чтобы продолжить...')
+    press_enter()
+
+def talk_planets():
+    clear()
+    print('=== Говори с планетами ===')
+    planets = ['Mercury','Venus','Earth','Mars','Jupiter','Saturn']
+    for _ in range(4):
+        p = random.choice(planets)
+        print(p, 'говорит:', random.choice(['Помоги мне','Я одинок','Спасибо','Я в порядке']))
+        input('Ответить (Enter): ')
+    press_enter()
+
+def apocalypse():
+    clear()
+    print('=== Конец света ===')
+    scenario = random.choice(['метеориты','ядерная война','паника','климатическая катастрофа'])
+    print('Сценарий:', scenario)
+    choice = input_choice('Что делать?', ['Hide','Flee','Join others','Record'])
+    print('Исход вашего выбора:', random.choice(['Выживете','Погибнете','Останетесь в подвешенном состоянии']))
+    press_enter()
+
+def revive_ability():
+    clear()
+    print('=== Способность оживлять ===')
+    tries = input_int('Сколько раз применить способность? (по умолчанию 3): ', 1) or 3
+    for i in range(tries):
+        target = input_choice('Кого оживить?', ['Растение','Животное','Покинутый предмет','Камень'])
+        success = random.random() < 0.5
+        if success:
+            print('Оживление успешно —', target, 'ожило!')
+        else:
+            print('Не удалось. Цена: вы чувствуете слабость.')
+        time.sleep(0.6)
+    press_enter()
+
+# -----------------------
+# Multiplayer variants (simulated NPCs)
+# -----------------------
+
+def revenge_vs_players():
+    clear()
+    print('=== Месть с другими игроками ===')
+    n = input_int('Игроков (включая вас) (по умолчанию 4): ', 2) or 4
+    names = names_list(n)
+    scores = {p:0 for p in names}
+    for r in range(4):
+        victim = random.choice(names)
+        print('Раунд', r+1, 'жертва:', victim)
+        for p in names:
+            if p == 'You':
+                action = choose_option('Что вы делаете?', ['Саботаж','Публичная порка','Прощение','Игнорировать'])
+                if action in (0,1):
+                    scores[p] += random.randint(0,2)
+            else:
+                if random.random() < 0.6:
+                    scores[p] += random.randint(0,2)
+        time.sleep(0.6)
+    clear()
+    print('Результаты мстителей:')
+    for p in names:
+        print(p, scores[p])
+    press_enter()
+
+def apocalypse_vs_players():
+    clear()
+    print('=== Конец света с другими игроками ===')
+    n = input_int('Игроков (включая вас) (по умолчанию 5): ', 2) or 5
+    names = names_list(n)
+    resources = {p: random.randint(1,5) for p in names}
+    rounds = input_int('Раундов выживания (по умолчанию 6): ', 1) or 6
+    for r in range(rounds):
+        print('Раунд', r+1)
+        event = random.choice(['radiation','storm','panic','calm'])
+        if event == 'storm':
+            loser = random.choice(names)
+            resources[loser] = max(0, resources[loser]-2)
+            print(loser, 'потерял ресурсы.')
+        elif event == 'panic':
+            giver = random.choice(names)
+            taker = random.choice([x for x in names if x!=giver])
+            transfer = min(2, resources[giver])
+            resources[giver] -= transfer
+            resources[taker] += transfer
+            print(giver, 'поделился с', taker)
+        else:
+            print('Стабильно.')
+        time.sleep(0.6)
+    print('Итоги ресурсов:')
+    for p in names:
+        print(p, resources[p])
+    press_enter()
+
+def five_nights_vs_players():
+    clear()
+    print('=== 5 ночей с Freddy с другими игроками ===')
+    n = input_int('Игроков (включая вас) (по умолчанию 3): ', 1) or 3
+    names = names_list(n)
+    sanity = {p:10 for p in names}
+    nights = input_int('Ночей (по умолчанию 3): ',1) or 3
+    for night in range(nights):
+        print('Ночь', night+1)
+        for p in names:
+            loss = random.randint(0,3)
+            sanity[p] -= loss
+            print(p, 'потерял', loss)
+        time.sleep(0.6)
+    print('Остатки разума:')
+    for p in names:
+        print(p, sanity[p])
+    press_enter()
+
+def abandoned_vs_players():
+    clear()
+    print('=== Заброшка с другими игроками ===')
+    n = input_int('Игроков (включая вас) (по умолчанию 4): ', 1) or 4
+    names = names_list(n)
+    health = {p:10 for p in names}
+    rooms = ['кухня','чердак','подвал','зал']
+    for r in range(5):
+        room = random.choice(rooms)
+        print('Комната:', room)
+        for p in names:
+            if p == 'You':
+                cmd = input('Кирпич/искать/уйти (brick/search/leave): ').strip().lower()
+                if cmd == 'search' and random.random() < 0.3:
+                    health[p] += 1; print('Вы нашли аптечку.')
+            else:
+                if random.random() < 0.2:
+                    health[p] -= 1
+        time.sleep(0.6)
+    print('Здоровье игроков:')
+    for p in names:
+        print(p, health[p])
+    press_enter()
+
+def oddities_vs_players():
+    clear()
+    print('=== Странности с другими игроками ===')
+    n = input_int('Игроков (включая вас) (по умолчанию 5): ', 1) or 5
+    names = names_list(n)
+    weird = {p:0 for p in names}
+    for i in range(6):
+        effect = random.choice(['mirror','voices','timewarp','shadows'])
+        print('Эффект:', effect)
+        for p in names:
+            if random.random() < 0.3:
+                weird[p] += 1
+        time.sleep(0.5)
+    print('Показатели странностей:')
+    for p in names:
+        print(p, weird[p])
+    press_enter()
+
+def revive_vs_players():
+    clear()
+    print('=== Способность оживлять с другими игроками ===')
+    n = input_int('Игроков (включая вас) (по умолчанию 4): ',1) or 4
+    names = names_list(n)
+    alive = {p: random.choice([True, True, False]) for p in names}
+    print('Исходное состояние (alive):', alive)
+    for p in names:
+        if p == 'You':
+            target = input('Кого вы оживите? (имя) или Enter случайно: ').strip()
+            if target not in names:
+                target = random.choice(names)
+            success = random.random() < 0.6
+            alive[target] = success
+            print('Вы пытались оживить', target, 'успех=', success)
+        else:
+            if random.random() < 0.4:
+                t = random.choice(names)
+                alive[t] = random.random() < 0.5
+    print('Финальное состояние alive:', alive)
+    press_enter()
 # -------------------------
 # Collect games into menu
 # -------------------------
@@ -3764,6 +4927,43 @@ GAMES = [
     ('Quiz на время', quiz_timed),
     ('Очень сложный Quiz', quiz_very_hard),
     ('Quiz но с другими игроками', quiz_vs_players),
+    ('Сапёр с другими игроками', minesweeper_vs_players),
+    ('Догонялки с другими игроками', chase_vs_players),
+    ('Догонялки с мячом с другими игроками', chase_ball_vs_players),
+    ('Кликер с другими игроками', clicker_vs_players),
+    ('Memory с другими игроками', memory_vs_players),
+    ('Pizza Memory с другими игроками', pizza_memory_vs_players),
+    ('Food Memory с другими игроками', food_memory_vs_players),
+    ('Sound Memory с другими игроками', sound_memory_vs_players),
+    ('Симулятор стройки с другими игроками', construction_vs_players),
+    ('Комнаты с другими игроками', rooms_vs_players),
+    ('Проклятие с другими игроками', curse_vs_players),
+    ('Живой автомобиль с глазами и ртом с другими игроками', living_car_vs_players),
+    ('Месть', revenge_game),
+    ('Довольная машина', happy_car),
+    ('Путь', the_path),
+    ('Свет выключен', lights_out),
+    ('Страхолюдина', scareman),
+    ('Клоун', clown_game),
+    ('Духи месяцев года', spirits_months),
+    ('Духи времён года', spirits_seasons),
+    ('Духи дней недели', spirits_weekdays),
+    ('Заброшка', abandoned_place),
+    ('Зомби апокалипсис', zombie_apocalypse),
+    ('Не ешь кекс', dont_eat_cake),
+    ('5 ночей с Freddy', five_nights_freddy),
+    ('БЕГИ', run_run_run),
+    ('Будь тише!', be_quieter),
+    ('Странности', oddities),
+    ('Говори с планетами', talk_planets),
+    ('Конец света', apocalypse),
+    ('Способность оживлять', revive_ability),
+    ('Месть с другими игроками', revenge_vs_players),
+    ('Конец света с другими игроками', apocalypse_vs_players),
+    ('5 ночей с Freddy с другими игроками', five_nights_vs_players),
+    ('Заброшка с другими игроками', abandoned_vs_players),
+    ('Странности с другими игроками', oddities_vs_players),
+    ('Способность оживлять с другими игроками', revive_vs_players),
 ]
 
 # -------------------------
